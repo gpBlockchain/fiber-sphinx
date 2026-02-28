@@ -11,7 +11,7 @@
 
 ## 审计进度
   - 总 TODO 项: 20
-  - ✅ 已完成: 20 | ❌ 发现问题: 3 | ⏳ 待审计: 0
+  - ✅ 已完成: 20 | ❌ 发现问题: 5 (3 已修复) | ⏳ 待审计: 0
 
 ---
 
@@ -56,7 +56,7 @@
     - 共享密钥、派生密钥使用后是否被清零
     - 是否使用 zeroize crate 或类似机制
   - **现有覆盖**: 无
-  - **发现记录**: ⚠️ 建议改进 — 无显式密钥清零机制，密钥材料在栈/堆上存留直至被覆盖。密钥生命周期由 Rust 所有权管理，但无法保证编译器不优化掉清零操作
+  - **发现记录**: ✅ 已修复 — ForwardKeys 和 ReturnKeys 结构体已添加 Zeroize + ZeroizeOnDrop，密钥材料在 drop 时自动清零
 
 ---
 
@@ -116,7 +116,7 @@
     - debug_assert! vs assert! 的安全影响
     - release 模式下 amt > arr.len() 的行为
   - **现有覆盖**: 间接覆盖（调用者有边界检查）
-  - **发现记录**: ⚠️ 建议改进 — 仅使用 debug_assert!，release 模式下若 amt > arr.len() 会发生减法下溢 panic。调用者已有保护，但缺乏纵深防御。
+  - **发现记录**: ✅ 已修复 — debug_assert! 已升级为 assert!，release 模式下也会进行边界检查
 
 - [x] 🟠 **AUDIT-MEMORY-003**: Panic 路径分析
   - **关联代码**: lib.rs:566, 608-609, 630-632, 637
@@ -231,13 +231,13 @@
 | 2026-02-28 | AUDIT-CRYPTO-002 | 域分离符合规范 | ✅ 通过 |
 | 2026-02-28 | AUDIT-CRYPTO-003 | 恒定时间比较正确使用 | ✅ 通过 |
 | 2026-02-28 | AUDIT-CRYPTO-004 | Scalar::from_be_bytes 理论可 panic | ⚠️ 建议改进 |
-| 2026-02-28 | AUDIT-CRYPTO-005 | 无显式密钥清零 | ⚠️ 建议改进 |
+| 2026-02-28 | AUDIT-CRYPTO-005 | 已添加 zeroize 清零机制 | ✅ 已修复 |
 | 2026-02-28 | AUDIT-INPUT-001 | version 字段未验证 | ⚠️ 建议改进 |
 | 2026-02-28 | AUDIT-INPUT-002 | 参数验证完备 | ✅ 通过 |
 | 2026-02-28 | AUDIT-INPUT-003 | checked_add 溢出保护完备 | ✅ 通过 |
 | 2026-02-28 | AUDIT-INPUT-004 | parse 输入验证完备 | ✅ 通过 |
 | 2026-02-28 | AUDIT-MEMORY-001 | 整数溢出保护完备 | ✅ 通过 |
-| 2026-02-28 | AUDIT-MEMORY-002 | shift 函数仅 debug_assert | ⚠️ 建议改进 |
+| 2026-02-28 | AUDIT-MEMORY-002 | debug_assert 已升级为 assert | ✅ 已修复 |
 | 2026-02-28 | AUDIT-MEMORY-003 | panic 路径不可达 | ✅ 通过 |
 | 2026-02-28 | AUDIT-MEMORY-004 | 无资源上限限制 | ⚠️ 建议改进 |
 | 2026-02-28 | AUDIT-LOGIC-001 | 洋葱包构造正确 | ✅ 通过 |
@@ -256,8 +256,8 @@
 ## 附录 C: 修复建议
 | 审计项 | 严重级别 | 建议方案 | 修复状态 |
 |--------|---------|---------|---------|
-| AUDIT-CRYPTO-005 | Low | 考虑引入 zeroize crate 对敏感密钥材料清零 | 建议 (非强制) |
+| AUDIT-CRYPTO-005 | Low | 引入 zeroize crate，ForwardKeys/ReturnKeys 实现 ZeroizeOnDrop | ✅ 已修复 |
 | AUDIT-INPUT-001 | Informational | 可考虑在 from_bytes 中校验 version 字段 | 建议 (非强制) |
-| AUDIT-MEMORY-002 | Low | 将 debug_assert! 升级为 assert! 或添加运行时检查 | 建议 (非强制) |
+| AUDIT-MEMORY-002 | Low | debug_assert! 已升级为 assert! | ✅ 已修复 |
 | AUDIT-MEMORY-004 | Low | 建议在文档中说明调用者应控制 packet_data_len 和 hops 数量上限 | 建议 (非强制) |
 | AUDIT-ERRINFO-001 | Informational | 可考虑统一错误类型以减少信息泄露 | 建议 (非强制) |

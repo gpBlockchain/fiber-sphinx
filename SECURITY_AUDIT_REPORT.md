@@ -43,7 +43,7 @@ fiber-sphinx 是一个编写良好的密码学库，具有以下安全亮点:
 | ■ Critical | 0 项 | 无 |
 | ■ High | 0 项 | 无 |
 | ■ Medium | 0 项 | 无 |
-| ■ Low | 3 项 | 密钥清零、shift 函数断言、资源上限 |
+| ■ Low | 3 项 (2 已修复) | 密钥清零 ✅、shift 函数断言 ✅、资源上限 |
 | ■ Informational | 2 项 | version 字段验证、错误类型信息泄露 |
 
 ---
@@ -62,9 +62,8 @@ fiber-sphinx 是一个编写良好的密码学库，具有以下安全亮点:
   let rho = derive_key(HMAC_KEY_RHO, shared_secret.as_ref());
   let mu = derive_key(HMAC_KEY_MU, shared_secret.as_ref());
   ```
-- **修复建议**: 考虑引入 `zeroize` crate，对 `ForwardKeys`、`ReturnKeys` 结构体和局部密钥变量实现 `Zeroize` trait。这是一个增强措施，而非关键漏洞修复。
-- **复现**: 无法直接复现——需要内存取证工具。
-- **修复状态**: 未修复 (建议性)
+- **修复方案**: 引入 `zeroize` crate，为 `ForwardKeys` 和 `ReturnKeys` 结构体添加 `Zeroize` + `ZeroizeOnDrop` derive，确保密钥材料在 drop 时自动清零。
+- **修复状态**: ✅ 已修复
 
 ### FINDING-002: shift_slice 函数仅使用 debug_assert
 - **严重级别**: Low
@@ -73,16 +72,13 @@ fiber-sphinx 是一个编写良好的密码学库，具有以下安全亮点:
 - **影响**: 当前所有调用者均在调用前验证参数，因此实际不可利用。但若未来新增调用者忘记检查，可能导致 release 模式下的 panic。这是一个纵深防御 (defense-in-depth) 问题。
 - **关键代码引用**:
   ```rust
-  // lib.rs:553-555
+  // lib.rs:553-555 (修复前)
   fn shift_slice_left(arr: &mut [u8], amt: usize) {
       debug_assert!(amt <= arr.len());
-      let pivot = arr.len() - amt;  // release 模式下可能下溢
+      let pivot = arr.len() - amt;
   ```
-- **修复建议**: 可选方案:
-  1. 将 `debug_assert!` 升级为 `assert!`（会引入 release 模式开销）
-  2. 添加 `if amt > arr.len() { return; }` 早期返回
-  3. 保持现状但在文档中明确标注 safety contract
-- **修复状态**: 未修复 (建议性——当前调用者已有保护)
+- **修复方案**: 将 `debug_assert!` 升级为 `assert!`，在 release 模式下也进行边界检查，提供纵深防御。
+- **修复状态**: ✅ 已修复
 
 ### FINDING-003: 无最大 packet_data_len 和 hops 数量限制
 - **严重级别**: Low

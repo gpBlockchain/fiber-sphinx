@@ -460,6 +460,35 @@ fn test_peel_returns_error_on_hop_data_len_just_under_packet_data_len() {
     assert_eq!(res, Err(SphinxError::HopDataLenTooLarge));
 }
 
+/// Integer overflow in peel() bounds check: when get_hop_data_len returns
+/// usize::MAX, data_len + 32 would overflow. The checked_add fix ensures
+/// this returns HopDataLenTooLarge instead of panicking.
+#[test]
+fn test_peel_returns_error_on_hop_data_len_overflow() {
+    let secp = Secp256k1::new();
+    let hops_keys = vec![SecretKey::from_slice(&[0x20; 32]).expect("32 bytes, within curve order")];
+    let hops_path = hops_keys.iter().map(|sk| sk.public_key(&secp)).collect();
+    let session_key = SecretKey::from_slice(&[0x41; 32]).expect("32 bytes, within curve order");
+    let hops_data = vec![vec![0]];
+    let assoc_data = vec![0x42u8; 32];
+
+    let packet = OnionPacket::create(
+        session_key,
+        hops_path,
+        hops_data,
+        Some(assoc_data.clone()),
+        PACKET_DATA_LEN,
+        &secp,
+    )
+    .expect("new onion packet");
+
+    // data_len = usize::MAX: data_len + 32 would overflow without checked_add
+    let res = packet.peel(&hops_keys[0], Some(&assoc_data), &secp, |_| {
+        Some(usize::MAX)
+    });
+    assert_eq!(res, Err(SphinxError::HopDataLenTooLarge));
+}
+
 /// HIGH-02: OnionErrorPacket::split() handles short packets gracefully.
 ///
 /// When packet_data has fewer than 32 bytes, the available bytes are copied

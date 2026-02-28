@@ -264,7 +264,11 @@ impl OnionPacket {
 
         // data | hmac | remaining
         let data_len = get_hop_data_len(&packet_data).ok_or(SphinxError::HopDataLenUnavailable)?;
-        if data_len + 32 > packet_data_len {
+        // Use checked_add to prevent integer overflow bypassing the bounds check
+        if data_len
+            .checked_add(32)
+            .map_or(true, |total| total > packet_data_len)
+        {
             return Err(SphinxError::HopDataLenTooLarge);
         }
         let hop_data = packet_data[0..data_len].to_vec();
@@ -656,7 +660,13 @@ fn generate_filler(
         forward_stream_cipher(&mut chacha, packet_data_len - pos);
 
         // 32 for mac
-        pos += data.len() + 32;
+        let hop_len = data
+            .len()
+            .checked_add(32)
+            .ok_or(SphinxError::HopDataLenTooLarge)?;
+        pos = pos
+            .checked_add(hop_len)
+            .ok_or(SphinxError::HopDataLenTooLarge)?;
         if pos > packet_data_len {
             return Err(SphinxError::HopDataLenTooLarge);
         }
@@ -693,7 +703,10 @@ fn construct_onion_packet(
 
     for (i, (data, keys)) in hops_data.iter().zip(hops_keys.iter()).rev().enumerate() {
         let data_len = data.len();
-        shift_slice_right(&mut packet_data, data_len + 32);
+        let shift_amt = data_len
+            .checked_add(32)
+            .ok_or(SphinxError::HopDataLenTooLarge)?;
+        shift_slice_right(&mut packet_data, shift_amt);
         packet_data[0..data_len].copy_from_slice(data);
         packet_data[data_len..(data_len + 32)].copy_from_slice(&hmac);
 

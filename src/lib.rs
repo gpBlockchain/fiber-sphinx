@@ -540,6 +540,7 @@ fn derive_hops_forward_keys<C: Signing>(
 
 #[inline]
 fn shift_slice_right(arr: &mut [u8], amt: usize) {
+    debug_assert!(amt <= arr.len());
     for i in (amt..arr.len()).rev() {
         arr[i] = arr[i - amt];
     }
@@ -550,6 +551,7 @@ fn shift_slice_right(arr: &mut [u8], amt: usize) {
 
 #[inline]
 fn shift_slice_left(arr: &mut [u8], amt: usize) {
+    debug_assert!(amt <= arr.len());
     let pivot = arr.len() - amt;
     for i in 0..pivot {
         arr[i] = arr[i + amt];
@@ -640,7 +642,7 @@ fn derive_key(hmac_key: &[u8], shared_secret: &[u8]) -> [u8; 32] {
 /// Generates the initial bytes of onion packet padding data from PRG.
 ///
 /// Uses Chacha as the PRG. The key is derived from the session key using HMAC, and the nonce is all zeros.
-fn generate_padding_data(packet_data_len: usize, pad_key: &[u8]) -> Vec<u8> {
+fn generate_padding_data(packet_data_len: usize, pad_key: &[u8; 32]) -> Vec<u8> {
     let mut cipher = ChaCha20::new(pad_key.into(), &CHACHA_NONCE.into());
     let mut buffer = vec![0u8; packet_data_len];
     cipher.apply_keystream(&mut buffer);

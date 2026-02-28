@@ -563,3 +563,143 @@ fn test_parse_authenticates_before_processing() {
     // Before the fix, it was called for every hop (5 times) before HMAC check.
     assert_eq!(call_count.load(Ordering::SeqCst), 1);
 }
+
+// ============================================================
+// Security audit edge-case tests
+// ============================================================
+
+/// AUDIT-INPUT-002: OnionPacket::create rejects empty hops path.
+#[test]
+fn test_create_rejects_empty_hops() {
+    let secp = Secp256k1::new();
+    let session_key = SecretKey::from_slice(&[0x41; 32]).expect("32 bytes, within curve order");
+    let result = OnionPacket::create(session_key, vec![], vec![], None, PACKET_DATA_LEN, &secp);
+    assert_eq!(result, Err(SphinxError::HopsIsEmpty));
+}
+
+/// AUDIT-INPUT-002: OnionPacket::create rejects mismatched hops_path and hops_data lengths.
+#[test]
+fn test_create_rejects_mismatched_hops_len() {
+    let secp = Secp256k1::new();
+    let hops_path = get_test_hops_path();
+    let session_key = SecretKey::from_slice(&[0x41; 32]).expect("32 bytes, within curve order");
+    // 5 hops but only 3 data items
+    let hops_data = vec![vec![0], vec![1], vec![2]];
+    let result = OnionPacket::create(
+        session_key,
+        hops_path,
+        hops_data,
+        None,
+        PACKET_DATA_LEN,
+        &secp,
+    );
+    assert_eq!(result, Err(SphinxError::HopsLenMismatch));
+}
+
+/// AUDIT-INPUT-001: OnionPacket::from_bytes rejects packets shorter than 66 bytes.
+#[test]
+fn test_from_bytes_rejects_short_packets() {
+    assert_eq!(
+        OnionPacket::from_bytes(vec![]),
+        Err(SphinxError::PacketDataLenTooSmall)
+    );
+    assert_eq!(
+        OnionPacket::from_bytes(vec![0u8; 65]),
+        Err(SphinxError::PacketDataLenTooSmall)
+    );
+}
+
+/// AUDIT-INPUT-001: OnionPacket::from_bytes rejects invalid public key bytes.
+#[test]
+fn test_from_bytes_rejects_invalid_pubkey() {
+    // 66 bytes: 1 (version) + 33 (invalid pubkey) + 0 (data) + 32 (hmac)
+    let mut bytes = vec![0u8; 66];
+    // Set an invalid public key (all zeros is not a valid secp256k1 point)
+    bytes[1] = 0x04; // Invalid prefix for compressed public key
+    assert_eq!(
+        OnionPacket::from_bytes(bytes),
+        Err(SphinxError::PublicKeyInvalid)
+    );
+}
+
+/// AUDIT-INPUT-003: peel() with get_hop_data_len returning 0 should succeed
+/// (hop data is empty, HMAC follows immediately).
+#[test]
+fn test_peel_with_zero_length_hop_data() {
+    let secp = Secp256k1::new();
+    let hops_keys = vec![SecretKey::from_slice(&[0x20; 32]).expect("32 bytes, within curve order")];
+    let hops_path = hops_keys.iter().map(|sk| sk.public_key(&secp)).collect();
+    let session_key = SecretKey::from_slice(&[0x41; 32]).expect("32 bytes, within curve order");
+    // Empty hop data
+    let hops_data = vec![vec![]];
+    let assoc_data = vec![0x42u8; 32];
+
+    let packet = OnionPacket::create(
+        session_key,
+        hops_path,
+        hops_data,
+        Some(assoc_data.clone()),
+        PACKET_DATA_LEN,
+        &secp,
+    )
+    .expect("new onion packet");
+
+    let res = packet.peel(&hops_keys[0], Some(&assoc_data), &secp, |_| Some(0));
+    assert!(res.is_ok());
+    let (data, _) = res.unwrap();
+    assert!(data.is_empty());
+}
+
+/// AUDIT-MEMORY-001: generate_filler rejects hops_data that exceeds packet_data_len.
+#[test]
+fn test_create_rejects_oversized_hops_data() {
+    let secp = Secp256k1::new();
+    let hops_keys = vec![SecretKey::from_slice(&[0x20; 32]).expect("32 bytes, within curve order")];
+    let hops_path = hops_keys.iter().map(|sk| sk.public_key(&secp)).collect();
+    let session_key = SecretKey::from_slice(&[0x41; 32]).expect("32 bytes, within curve order");
+    // Data + HMAC (32) exceeds packet_data_len (64)
+    let hops_data = vec![vec![0u8; 64]];
+
+    let result = OnionPacket::create(session_key, hops_path, hops_data, None, 64, &secp);
+    assert_eq!(result, Err(SphinxError::HopDataLenTooLarge));
+}
+
+/// AUDIT-INPUT-004: OnionErrorPacket::parse returns None for packets shorter than 32 bytes.
+#[test]
+fn test_error_packet_parse_rejects_short_packet() {
+    let hops_path = get_test_hops_path();
+    let session_key = get_test_session_key();
+    let short_packet = OnionErrorPacket::from_bytes(vec![0u8; 31]);
+    let result = short_packet.parse(hops_path, session_key, |_| Some(()));
+    assert!(result.is_none());
+}
+
+/// AUDIT-INPUT-004: OnionErrorPacket::parse returns None for empty hops_path.
+#[test]
+fn test_error_packet_parse_empty_hops() {
+    let session_key = get_test_session_key();
+    let packet = OnionErrorPacket::from_bytes(vec![0u8; 64]);
+    let result = packet.parse(vec![], session_key, |_| Some(()));
+    assert!(result.is_none());
+}
+
+/// AUDIT-SERDE-001: OnionPacket into_bytes/from_bytes roundtrip with minimal packet (66 bytes).
+#[test]
+fn test_onion_packet_roundtrip_minimal() {
+    let public_key = PublicKey::from_slice(
+        Vec::from_hex("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619")
+            .expect("valid hex")
+            .as_ref(),
+    )
+    .expect("valid public key");
+    let packet = OnionPacket {
+        version: 0,
+        public_key,
+        packet_data: vec![],
+        hmac: [0xAB; 32],
+    };
+    let bytes = packet.clone().into_bytes();
+    assert_eq!(bytes.len(), 66); // 1 + 33 + 0 + 32
+    let restored = OnionPacket::from_bytes(bytes).expect("valid packet");
+    assert_eq!(restored, packet);
+}

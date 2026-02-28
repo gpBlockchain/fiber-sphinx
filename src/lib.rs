@@ -90,6 +90,7 @@ use secp256k1::{
 use sha2::{Digest as _, Sha256};
 use subtle::ConstantTimeEq;
 use thiserror::Error;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 const HMAC_KEY_RHO: &[u8] = b"rho";
 const HMAC_KEY_MU: &[u8] = b"mu";
@@ -422,7 +423,7 @@ pub enum SphinxError {
 }
 
 /// Keys used to forward the onion packet.
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Zeroize, ZeroizeOnDrop)]
 pub struct ForwardKeys {
     /// Key derived from the shared secret for the hop. It is used to encrypt the packet data.
     pub rho: [u8; 32],
@@ -441,7 +442,7 @@ impl ForwardKeys {
 }
 
 /// Keys used to return the error packet.
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Zeroize, ZeroizeOnDrop)]
 pub struct ReturnKeys {
     /// Key derived from the shared secret for the hop. It is used to encrypt the error packet data.
     pub ammag: [u8; 32],
@@ -540,7 +541,7 @@ fn derive_hops_forward_keys<C: Signing>(
 
 #[inline]
 fn shift_slice_right(arr: &mut [u8], amt: usize) {
-    debug_assert!(amt <= arr.len());
+    assert!(amt <= arr.len());
     for i in (amt..arr.len()).rev() {
         arr[i] = arr[i - amt];
     }
@@ -551,7 +552,7 @@ fn shift_slice_right(arr: &mut [u8], amt: usize) {
 
 #[inline]
 fn shift_slice_left(arr: &mut [u8], amt: usize) {
-    debug_assert!(amt <= arr.len());
+    assert!(amt <= arr.len());
     let pivot = arr.len() - amt;
     for i in 0..pivot {
         arr[i] = arr[i + amt];

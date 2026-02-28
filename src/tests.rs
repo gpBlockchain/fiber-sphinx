@@ -396,3 +396,103 @@ fn test_onion_error_packet_concat_split() {
     assert_eq!(hmac, expected_hmac);
     assert_eq!(payload, expected_payload);
 }
+
+/// HIGH-01: peel() returns HopDataLenTooLarge when get_hop_data_len returns a value where
+/// data_len + 32 > packet_data_len.
+///
+/// The bounds check validates `data_len + 32 > packet_data_len` to prevent
+/// out-of-bounds slice access.
+#[test]
+fn test_peel_returns_error_on_hop_data_len_near_packet_data_len() {
+    let secp = Secp256k1::new();
+    let hops_keys = vec![SecretKey::from_slice(&[0x20; 32]).expect("32 bytes, within curve order")];
+    let hops_path = hops_keys.iter().map(|sk| sk.public_key(&secp)).collect();
+    let session_key = SecretKey::from_slice(&[0x41; 32]).expect("32 bytes, within curve order");
+    let hops_data = vec![vec![0]];
+    let assoc_data = vec![0x42u8; 32];
+
+    let packet = OnionPacket::create(
+        session_key,
+        hops_path,
+        hops_data,
+        Some(assoc_data.clone()),
+        PACKET_DATA_LEN,
+        &secp,
+    )
+    .expect("new onion packet");
+
+    let packet_data_len = packet.packet_data.len();
+
+    // data_len == packet_data_len: data_len + 32 > packet_data_len
+    let res = packet.peel(&hops_keys[0], Some(&assoc_data), &secp, |_| {
+        Some(packet_data_len)
+    });
+    assert_eq!(res, Err(SphinxError::HopDataLenTooLarge));
+}
+
+/// HIGH-01 (variant): Same check with data_len = packet_data_len - 1.
+/// data_len + 32 still exceeds packet_data_len.
+#[test]
+fn test_peel_returns_error_on_hop_data_len_just_under_packet_data_len() {
+    let secp = Secp256k1::new();
+    let hops_keys = vec![SecretKey::from_slice(&[0x20; 32]).expect("32 bytes, within curve order")];
+    let hops_path = hops_keys.iter().map(|sk| sk.public_key(&secp)).collect();
+    let session_key = SecretKey::from_slice(&[0x41; 32]).expect("32 bytes, within curve order");
+    let hops_data = vec![vec![0]];
+    let assoc_data = vec![0x42u8; 32];
+
+    let packet = OnionPacket::create(
+        session_key,
+        hops_path,
+        hops_data,
+        Some(assoc_data.clone()),
+        PACKET_DATA_LEN,
+        &secp,
+    )
+    .expect("new onion packet");
+
+    let packet_data_len = packet.packet_data.len();
+
+    // data_len == packet_data_len - 1: data_len + 32 still exceeds packet_data_len
+    let res = packet.peel(&hops_keys[0], Some(&assoc_data), &secp, |_| {
+        Some(packet_data_len - 1)
+    });
+    assert_eq!(res, Err(SphinxError::HopDataLenTooLarge));
+}
+
+/// HIGH-02: OnionErrorPacket::split() handles short packets gracefully.
+///
+/// When packet_data has fewer than 32 bytes, the available bytes are copied
+/// into the HMAC (with remaining bytes left as zero).
+#[test]
+fn test_error_packet_split_short_packet() {
+    let packet = OnionErrorPacket::from_bytes(vec![0xBB; 10]);
+    let (hmac, payload) = packet.split();
+
+    let mut expected_hmac = [0u8; 32];
+    expected_hmac[..10].copy_from_slice(&[0xBB; 10]);
+    assert_eq!(hmac, expected_hmac);
+    assert!(payload.is_empty());
+}
+
+/// HIGH-02 (variant): split() handles an empty packet gracefully.
+#[test]
+fn test_error_packet_split_empty_packet() {
+    let packet = OnionErrorPacket::from_bytes(vec![]);
+    let (hmac, payload) = packet.split();
+
+    assert_eq!(hmac, [0u8; 32]);
+    assert!(payload.is_empty());
+}
+
+/// HIGH-02 (variant): split() handles a 31-byte packet gracefully.
+#[test]
+fn test_error_packet_split_31_byte_packet() {
+    let packet = OnionErrorPacket::from_bytes(vec![0xAA; 31]);
+    let (hmac, payload) = packet.split();
+
+    let mut expected_hmac = [0u8; 32];
+    expected_hmac[..31].copy_from_slice(&[0xAA; 31]);
+    assert_eq!(hmac, expected_hmac);
+    assert!(payload.is_empty());
+}

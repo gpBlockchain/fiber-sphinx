@@ -108,6 +108,7 @@ dependencies = [
  "hmac",
  "secp256k1",
  "sha2",
+ "subtle",
  "thiserror",
 ]
 

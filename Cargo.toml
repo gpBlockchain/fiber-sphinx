@@ -13,6 +13,7 @@ sha2 = "0.10.8"
 hmac = "0.12.1"
 thiserror = "1.0"
 chacha20 = "0.9.1"
+subtle = "2.6"
 
 [dev-dependencies]
 hex-conservative = "0.2.1"

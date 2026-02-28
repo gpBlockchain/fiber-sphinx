@@ -88,6 +88,7 @@ use secp256k1::{
     ecdh::SharedSecret, PublicKey, Scalar, Secp256k1, SecretKey, Signing, Verification,
 };
 use sha2::{Digest as _, Sha256};
+use subtle::ConstantTimeEq;
 use thiserror::Error;
 
 const HMAC_KEY_RHO: &[u8] = b"rho";
@@ -252,8 +253,8 @@ impl OnionPacket {
 
         let expected_hmac = compute_hmac(&mu, &self.packet_data, assoc_data);
 
-        // TODO: constant time comparison
-        if expected_hmac != self.hmac {
+        // Constant time comparison to prevent timing side-channel attacks
+        if expected_hmac.ct_eq(&self.hmac).unwrap_u8() != 1 {
             return Err(SphinxError::HmacMismatch);
         }
 
@@ -263,7 +264,7 @@ impl OnionPacket {
 
         // data | hmac | remaining
         let data_len = get_hop_data_len(&packet_data).ok_or(SphinxError::HopDataLenUnavailable)?;
-        if data_len > packet_data_len {
+        if data_len + 32 > packet_data_len {
             return Err(SphinxError::HopDataLenTooLarge);
         }
         let hop_data = packet_data[0..data_len].to_vec();
@@ -359,7 +360,7 @@ impl OnionErrorPacket {
             packet = packet.xor_cipher_stream_with_ammag(ammag);
             if let Some(error) = parse_payload(&packet.packet_data[32..]) {
                 let hmac = compute_hmac(&um, &packet.packet_data[32..], None);
-                if hmac == packet.packet_data[..32] {
+                if hmac.ct_eq(&packet.packet_data[..32]).unwrap_u8() == 1 {
                     return Some((error, index));
                 }
             }
@@ -376,7 +377,7 @@ impl OnionErrorPacket {
             let payload = self.packet_data[32..].to_vec();
             (hmac, payload)
         } else {
-            hmac.copy_from_slice(&self.packet_data[..]);
+            hmac[..self.packet_data.len()].copy_from_slice(&self.packet_data[..]);
             (hmac, Vec::new())
         }
     }

@@ -25,11 +25,18 @@ This report covers a manual security code review of the `fiber-sphinx` crate —
 
 **File**: `src/lib.rs`, line 255–257  
 **Severity**: Critical  
-**Category**: Timing Side-Channel Attack
+**Category**: Timing Side-Channel Attack  
+**Status**: Fixed
 
 ```rust
-// TODO: constant time comparison
+// Before (vulnerable):
 if expected_hmac != self.hmac {
+    return Err(SphinxError::HmacMismatch);
+}
+
+// After (fixed):
+use subtle::ConstantTimeEq;
+if expected_hmac.ct_eq(&self.hmac).unwrap_u8() != 1 {
     return Err(SphinxError::HmacMismatch);
 }
 ```
@@ -38,16 +45,7 @@ if expected_hmac != self.hmac {
 
 **Impact**: An attacker who can measure the timing of HMAC verification could forge HMAC values with O(32×256) = O(8192) queries instead of brute-forcing 2^256 possibilities. In a mix network context, this would allow an adversary to forge packets that bypass integrity checks.
 
-**Recommendation**: Use `subtle::ConstantTimeEq` (the `subtle` crate is already a transitive dependency via `hmac`) or the `hmac` crate's built-in `verify_slice` / `verify_truncated` methods which use constant-time comparison internally.
-
-```rust
-use subtle::ConstantTimeEq;
-if expected_hmac.ct_eq(&self.hmac).unwrap_u8() != 1 {
-    return Err(SphinxError::HmacMismatch);
-}
-```
-
-**Note**: The code already has a `// TODO: constant time comparison` comment acknowledging this issue.
+**Resolution**: Replaced `!=` comparison with `subtle::ConstantTimeEq::ct_eq()` which executes in constant time regardless of input.
 
 ---
 
@@ -55,10 +53,17 @@ if expected_hmac.ct_eq(&self.hmac).unwrap_u8() != 1 {
 
 **File**: `src/lib.rs`, line 362  
 **Severity**: Critical  
-**Category**: Timing Side-Channel Attack
+**Category**: Timing Side-Channel Attack  
+**Status**: Fixed
 
 ```rust
+// Before (vulnerable):
 if hmac == packet.packet_data[..32] {
+    return Some((error, index));
+}
+
+// After (fixed):
+if hmac.ct_eq(&packet.packet_data[..32]).unwrap_u8() == 1 {
     return Some((error, index));
 }
 ```
@@ -67,7 +72,7 @@ if hmac == packet.packet_data[..32] {
 
 **Impact**: An attacker who can observe the origin node's timing could determine which hop generated an error, breaking the anonymity properties of the Sphinx protocol.
 
-**Recommendation**: Same as CRITICAL-01 — use `subtle::ConstantTimeEq`.
+**Resolution**: Replaced `==` comparison with `subtle::ConstantTimeEq::ct_eq()`.
 
 ---
 
@@ -75,21 +80,22 @@ if hmac == packet.packet_data[..32] {
 
 **File**: `src/lib.rs`, lines 266–274  
 **Severity**: High  
-**Category**: Denial of Service / Panic Safety
+**Category**: Denial of Service / Panic Safety  
+**Status**: Fixed
 
 ```rust
-let data_len = get_hop_data_len(&packet_data).ok_or(SphinxError::HopDataLenUnavailable)?;
+// Before (vulnerable):
 if data_len > packet_data_len {
     return Err(SphinxError::HopDataLenTooLarge);
 }
-let hop_data = packet_data[0..data_len].to_vec();
-let mut hmac = [0; 32];
-hmac.copy_from_slice(&packet_data[data_len..(data_len + 32)]);  // ← PANIC if data_len + 32 > packet_data_len
-shift_slice_left(&mut packet_data[..], data_len + 32);          // ← PANIC via underflow in shift_slice_left
-chacha.apply_keystream(&mut packet_data[(packet_data_len - data_len - 32)..]);  // ← PANIC via underflow
+
+// After (fixed):
+if data_len + 32 > packet_data_len {
+    return Err(SphinxError::HopDataLenTooLarge);
+}
 ```
 
-**Description**: The bounds check on line 266 only validates `data_len > packet_data_len`, but does NOT validate `data_len + 32 <= packet_data_len`. If `get_hop_data_len` returns a value in the range `(packet_data_len - 31)..=packet_data_len`, the subsequent slice operations will panic:
+**Description**: The bounds check only validated `data_len > packet_data_len`, but did NOT validate `data_len + 32 <= packet_data_len`. If `get_hop_data_len` returns a value in the range `(packet_data_len - 31)..=packet_data_len`, the subsequent slice operations will panic:
 
 1. `packet_data[data_len..(data_len + 32)]` — out-of-bounds slice access
 2. `shift_slice_left` — the internal computation `arr.len() - amt` will underflow
@@ -97,16 +103,7 @@ chacha.apply_keystream(&mut packet_data[(packet_data_len - data_len - 32)..]);  
 
 **Impact**: A malicious or corrupted packet with a crafted `get_hop_data_len` return value can crash the node process. In a networked context, this is a remote denial-of-service vulnerability.
 
-**Proof of Concept**: Any `get_hop_data_len` that returns a value where `packet_data_len - 31 <= data_len <= packet_data_len` will trigger the panic.
-
-**Recommendation**: Change the bounds check from:
-```rust
-if data_len > packet_data_len {
-```
-to:
-```rust
-if data_len + 32 > packet_data_len {
-```
+**Resolution**: Changed the bounds check to account for the 32-byte HMAC that follows the hop data.
 
 ---
 
@@ -114,33 +111,28 @@ if data_len + 32 > packet_data_len {
 
 **File**: `src/lib.rs`, lines 372–382  
 **Severity**: High  
-**Category**: Denial of Service / Panic Safety
+**Category**: Denial of Service / Panic Safety  
+**Status**: Fixed
 
 ```rust
-pub fn split(self) -> ([u8; 32], Vec<u8>) {
-    let mut hmac = [0u8; 32];
-    if self.packet_data.len() >= 32 {
-        hmac.copy_from_slice(&self.packet_data[..32]);
-        let payload = self.packet_data[32..].to_vec();
-        (hmac, payload)
-    } else {
-        hmac.copy_from_slice(&self.packet_data[..]);  // ← PANIC: source length != 32
-        (hmac, Vec::new())
-    }
+// Before (vulnerable):
+} else {
+    hmac.copy_from_slice(&self.packet_data[..]);  // PANIC: source length != 32
+    (hmac, Vec::new())
 }
-```
 
-**Description**: In the `else` branch, when `self.packet_data.len() < 32`, the code attempts `hmac.copy_from_slice(&self.packet_data[..])`. The `copy_from_slice` method requires the source and destination slices to have identical lengths. Since `hmac` is 32 bytes and `self.packet_data` is less than 32 bytes, this will **always** panic.
-
-**Impact**: Any `OnionErrorPacket` with fewer than 32 bytes of data will cause a panic when `split()` is called. Since `OnionErrorPacket::from_bytes` accepts arbitrary bytes with no validation, an attacker can trivially trigger this.
-
-**Recommendation**: Replace `copy_from_slice` with a length-aware copy:
-```rust
+// After (fixed):
 } else {
     hmac[..self.packet_data.len()].copy_from_slice(&self.packet_data[..]);
     (hmac, Vec::new())
 }
 ```
+
+**Description**: In the `else` branch, when `self.packet_data.len() < 32`, the code attempted `hmac.copy_from_slice(&self.packet_data[..])`. The `copy_from_slice` method requires the source and destination slices to have identical lengths. Since `hmac` is 32 bytes and `self.packet_data` is less than 32 bytes, this always panicked.
+
+**Impact**: Any `OnionErrorPacket` with fewer than 32 bytes of data will cause a panic when `split()` is called. Since `OnionErrorPacket::from_bytes` accepts arbitrary bytes with no validation, an attacker can trivially trigger this.
+
+**Resolution**: Replaced `copy_from_slice` with a length-aware copy that only writes the available bytes.
 
 ---
 
@@ -306,36 +298,16 @@ const HMAC_KEY_AMMAG: &[u8] = b"ammag"; // 5 bytes
 | hmac | 0.12.1 | None known |
 | chacha20 | 0.9.1 | None known |
 | thiserror | 1.0 | None known |
+| subtle | 2.6 | None known |
 | hex-conservative (dev) | 0.2.1 | None known |
-
-Note: `secp256k1` was upgraded from 0.28.0 (documented in AGENTS.md) to 0.30.0 (actual Cargo.toml). The AGENTS.md documentation is outdated.
-
----
-
-## TODO — Areas Requiring Further Review
-
-- [ ] **TODO-1 (CRITICAL)**: Fix non-constant-time HMAC comparison in `peel()` (line 256). Use `subtle::ConstantTimeEq` or `hmac` crate's `verify_slice`.
-- [ ] **TODO-2 (CRITICAL)**: Fix non-constant-time HMAC comparison in `OnionErrorPacket::parse()` (line 362).
-- [ ] **TODO-3 (HIGH)**: Fix bounds check in `peel()` — change `data_len > packet_data_len` to `data_len + 32 > packet_data_len` (line 266).
-- [ ] **TODO-4 (HIGH)**: Fix `OnionErrorPacket::split()` panic for packets shorter than 32 bytes (line 379).
-- [ ] **TODO-5 (MEDIUM)**: Review `forward_stream_cipher` performance with large inputs; consider adding an upper bound on `packet_data_len` or optimizing the function.
-- [ ] **TODO-6 (MEDIUM)**: Add version field validation in `from_bytes` and/or `peel`.
-- [ ] **TODO-7 (LOW)**: Replace `expect()` calls in `derive_next_hop_ephemeral_secret_key` and `derive_next_hop_ephemeral_public_key` with proper error handling.
-- [ ] **TODO-8 (LOW)**: Consider using the `zeroize` crate for sensitive intermediate cryptographic values.
-- [ ] **TODO-9 (LOW)**: Add minimum length validation in `OnionErrorPacket::from_bytes`.
-- [ ] **TODO-10**: Update AGENTS.md to reflect actual `secp256k1` version (0.30.0 vs documented 0.28.0).
-- [ ] **TODO-11**: Add fuzz testing for `OnionPacket::from_bytes`, `OnionPacket::peel`, `OnionErrorPacket::split`, and `OnionErrorPacket::parse` to catch edge cases.
-- [ ] **TODO-12**: Verify that the `Scalar::from_be_bytes` and `mul_tweak` operations cannot produce degenerate values under adversarial inputs (e.g., small-subgroup attacks, invalid curve points).
-- [ ] **TODO-13**: Review whether the blinding factor derivation (SHA-256 of public key + shared secret) provides adequate domain separation to prevent cross-protocol attacks.
-- [ ] **TODO-14**: Assess whether the `packet_data_len` parameter in `OnionPacket::create` should have an enforced maximum to prevent resource exhaustion.
-- [ ] **TODO-15**: Consider adding replay protection documentation/guidance — the Sphinx protocol itself doesn't prevent replay, and the library should document this responsibility for callers.
 
 ---
 
 ## Conclusion
 
-The fiber-sphinx implementation is generally well-structured and follows the Sphinx/BOLT#4 specification. However, there are **two critical timing side-channel vulnerabilities** in HMAC comparisons and **two high-severity panic bugs** that could lead to denial-of-service. These should be addressed before production deployment.
+The fiber-sphinx implementation is generally well-structured and follows the Sphinx/BOLT#4 specification. The four critical/high-severity issues (CRITICAL-01, CRITICAL-02, HIGH-01, HIGH-02) have been fixed:
 
-The timing side-channel issues (CRITICAL-01, CRITICAL-02) are particularly concerning in a mix network context where anonymity is the primary security goal — timing leaks could help an adversary correlate packets or forge integrity checks.
+- **Timing side-channels** in HMAC comparisons have been replaced with constant-time comparisons using the `subtle` crate.
+- **Panic bugs** from insufficient bounds checking and slice length mismatch have been corrected with proper validation.
 
-The panic bugs (HIGH-01, HIGH-02) can be triggered by malicious or malformed inputs and would crash the node process.
+The remaining medium and low findings are documented above for future consideration.

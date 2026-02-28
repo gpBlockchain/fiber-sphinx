@@ -362,7 +362,7 @@ impl OnionErrorPacket {
         {
             let ReturnKeys { ammag, um } = ReturnKeys::new(&shared_secret);
             packet = packet.xor_cipher_stream_with_ammag(ammag);
-            // Verify HMAC before processing payload (authenticate then process)
+            // Verify HMAC before parsing payload (authenticate then parse)
             let hmac = compute_hmac(&um, &packet.packet_data[32..], None);
             if hmac.ct_eq(&packet.packet_data[..32]).unwrap_u8() == 1 {
                 if let Some(error) = parse_payload(&packet.packet_data[32..]) {

@@ -526,3 +526,40 @@ fn test_error_packet_split_31_byte_packet() {
     assert_eq!(hmac, expected_hmac);
     assert!(payload.is_empty());
 }
+
+/// Verify that parse_payload is only called on HMAC-verified data (authenticate then process).
+/// The callback should never be invoked for hops where the HMAC does not match.
+#[test]
+fn test_parse_authenticates_before_processing() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let secp = Secp256k1::new();
+    let hops_path = get_test_hops_path();
+    let session_key = get_test_session_key();
+    let hops_ss: Vec<_> =
+        OnionSharedSecretIter::new(hops_path.iter(), session_key, &secp).collect();
+    let error_payload = vec![0x00, 0x02, 0x20, 0x02, 0x00, 0x00];
+
+    // Create an error packet from the last (5th) hop
+    let packet = OnionErrorPacket::create(&hops_ss[4], error_payload)
+        .xor_cipher_stream(&hops_ss[3])
+        .xor_cipher_stream(&hops_ss[2])
+        .xor_cipher_stream(&hops_ss[1])
+        .xor_cipher_stream(&hops_ss[0]);
+
+    let call_count = AtomicUsize::new(0);
+    let result = packet.parse(hops_path, session_key, |payload: &[u8]| {
+        call_count.fetch_add(1, Ordering::SeqCst);
+        // A parse function that always "succeeds"
+        Some(payload.to_vec())
+    });
+
+    // The parser should find the error at hop index 4
+    assert!(result.is_some());
+    let (_data, index) = result.unwrap();
+    assert_eq!(index, 4);
+
+    // parse_payload should only be called once: for the hop whose HMAC matched.
+    // Before the fix, it was called for every hop (5 times) before HMAC check.
+    assert_eq!(call_count.load(Ordering::SeqCst), 1);
+}

@@ -396,3 +396,138 @@ fn test_onion_error_packet_concat_split() {
     assert_eq!(hmac, expected_hmac);
     assert_eq!(payload, expected_payload);
 }
+
+/// HIGH-01: peel() panics when get_hop_data_len returns a value where
+/// data_len + 32 > packet_data_len but data_len <= packet_data_len.
+///
+/// The bounds check only validates `data_len > packet_data_len`, but does NOT
+/// validate `data_len + 32 <= packet_data_len`. This causes a panic on the
+/// subsequent slice operations.
+#[test]
+fn test_peel_panic_on_hop_data_len_near_packet_data_len() {
+    let secp = Secp256k1::new();
+    let hops_keys = vec![SecretKey::from_slice(&[0x20; 32]).expect("32 bytes, within curve order")];
+    let hops_path = hops_keys.iter().map(|sk| sk.public_key(&secp)).collect();
+    let session_key = SecretKey::from_slice(&[0x41; 32]).expect("32 bytes, within curve order");
+    let hops_data = vec![vec![0]];
+    let assoc_data = vec![0x42u8; 32];
+
+    let packet = OnionPacket::create(
+        session_key,
+        hops_path,
+        hops_data,
+        Some(assoc_data.clone()),
+        PACKET_DATA_LEN,
+        &secp,
+    )
+    .expect("new onion packet");
+
+    let packet_data_len = packet.packet_data.len();
+
+    // A get_hop_data_len that returns packet_data_len (equal to packet length).
+    // The check `data_len > packet_data_len` fails to catch this (it's equal, not greater),
+    // but data_len + 32 > packet_data_len, causing a panic in subsequent slicing.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        packet.peel(&hops_keys[0], Some(&assoc_data), &secp, |_| {
+            Some(packet_data_len)
+        })
+    }));
+
+    // Current behavior: panics due to insufficient bounds check.
+    // Expected behavior: should return Err(SphinxError::HopDataLenTooLarge) instead of panicking.
+    assert!(
+        result.is_err(),
+        "peel() should panic (current bug) when data_len == packet_data_len, \
+         because data_len + 32 > packet_data_len causes out-of-bounds access"
+    );
+}
+
+/// HIGH-01 (variant): Same bug but with data_len = packet_data_len - 1.
+/// This also triggers the panic since data_len + 32 > packet_data_len.
+#[test]
+fn test_peel_panic_on_hop_data_len_just_under_packet_data_len() {
+    let secp = Secp256k1::new();
+    let hops_keys = vec![SecretKey::from_slice(&[0x20; 32]).expect("32 bytes, within curve order")];
+    let hops_path = hops_keys.iter().map(|sk| sk.public_key(&secp)).collect();
+    let session_key = SecretKey::from_slice(&[0x41; 32]).expect("32 bytes, within curve order");
+    let hops_data = vec![vec![0]];
+    let assoc_data = vec![0x42u8; 32];
+
+    let packet = OnionPacket::create(
+        session_key,
+        hops_path,
+        hops_data,
+        Some(assoc_data.clone()),
+        PACKET_DATA_LEN,
+        &secp,
+    )
+    .expect("new onion packet");
+
+    let packet_data_len = packet.packet_data.len();
+
+    // data_len = packet_data_len - 1: passes the check but data_len + 32 exceeds packet_data_len
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        packet.peel(&hops_keys[0], Some(&assoc_data), &secp, |_| {
+            Some(packet_data_len - 1)
+        })
+    }));
+
+    // Current behavior: panics due to insufficient bounds check.
+    // Expected behavior: should return Err(SphinxError::HopDataLenTooLarge) instead of panicking.
+    assert!(
+        result.is_err(),
+        "peel() should panic (current bug) when data_len == packet_data_len - 1, \
+         because data_len + 32 > packet_data_len causes out-of-bounds access"
+    );
+}
+
+/// HIGH-02: OnionErrorPacket::split() panics when packet_data has fewer than 32 bytes.
+///
+/// The else branch does `hmac.copy_from_slice(&self.packet_data[..])` where hmac is
+/// [u8; 32] but packet_data is shorter, causing copy_from_slice to panic due to
+/// length mismatch.
+#[test]
+fn test_error_packet_split_panic_on_short_packet() {
+    // Create an OnionErrorPacket with fewer than 32 bytes
+    let packet = OnionErrorPacket::from_bytes(vec![0u8; 10]);
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| packet.split()));
+
+    // Current behavior: panics because copy_from_slice requires matching lengths.
+    // Expected behavior: should handle short packets gracefully without panicking.
+    assert!(
+        result.is_err(),
+        "split() should panic (current bug) when packet_data.len() < 32, \
+         because copy_from_slice requires source and dest to have equal lengths"
+    );
+}
+
+/// HIGH-02 (variant): split() panics even with an empty packet.
+#[test]
+fn test_error_packet_split_panic_on_empty_packet() {
+    let packet = OnionErrorPacket::from_bytes(vec![]);
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| packet.split()));
+
+    // Current behavior: panics on empty packet_data.
+    // Expected behavior: should handle empty packets gracefully.
+    assert!(
+        result.is_err(),
+        "split() should panic (current bug) when packet_data is empty"
+    );
+}
+
+/// HIGH-02 (variant): split() panics with 31-byte packet (just under threshold).
+#[test]
+fn test_error_packet_split_panic_on_31_byte_packet() {
+    let packet = OnionErrorPacket::from_bytes(vec![0xAA; 31]);
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| packet.split()));
+
+    // Current behavior: panics because 31 < 32 bytes.
+    // Expected behavior: should handle gracefully.
+    assert!(
+        result.is_err(),
+        "split() should panic (current bug) when packet_data.len() == 31"
+    );
+}

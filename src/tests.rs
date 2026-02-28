@@ -461,8 +461,9 @@ fn test_peel_returns_error_on_hop_data_len_just_under_packet_data_len() {
 }
 
 /// Integer overflow in peel() bounds check: when get_hop_data_len returns
-/// usize::MAX, data_len + 32 would overflow. The checked_add fix ensures
-/// this returns HopDataLenTooLarge instead of panicking.
+/// usize::MAX, data_len + 32 would overflow to 31 in release mode,
+/// bypassing the bounds check. The checked_add fix ensures this returns
+/// HopDataLenTooLarge instead of panicking on subsequent slice operations.
 #[test]
 fn test_peel_returns_error_on_hop_data_len_overflow() {
     let secp = Secp256k1::new();

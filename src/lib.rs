@@ -264,7 +264,7 @@ impl OnionPacket {
 
         // data | hmac | remaining
         let data_len = get_hop_data_len(&packet_data).ok_or(SphinxError::HopDataLenUnavailable)?;
-        // Use checked_add to prevent integer overflow bypassing the bounds check
+        // Use checked_add to prevent integer overflow; treat overflow as exceeding packet bounds
         if data_len
             .checked_add(32)
             .map_or(true, |total| total > packet_data_len)
